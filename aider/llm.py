@@ -40,6 +40,12 @@ class LazyLiteLLM:
         self._lazy_module.set_verbose = False
         self._lazy_module.drop_params = True
         self._lazy_module._logging._disable_debugging()
+        
+        # Support custom OpenAI-compatible endpoints
+        if os.environ.get("OPENAI_API_BASE"):
+            self._lazy_module.api_base = os.environ["OPENAI_API_BASE"]
+        if os.environ.get("NO_VERIFY_SSL"):
+            self._lazy_module.verify_ssl = False
 
 
 litellm = LazyLiteLLM()

@@ -309,10 +309,15 @@ model_info_manager = ModelInfoManager()
 
 class Model(ModelSettings):
     def __init__(
-        self, model, weak_model=None, editor_model=None, editor_edit_format=None, verbose=False
+        self, model, weak_model=None, editor_model=None, editor_edit_format=None, verbose=False,
+        api_base=None, no_verify_ssl=False
     ):
-        # Map any alias to its canonical name
-        model = MODEL_ALIASES.get(model, model)
+        # Map any alias to its canonical name unless it's a custom model
+        if not api_base:
+            model = MODEL_ALIASES.get(model, model)
+        
+        self.api_base = api_base
+        self.no_verify_ssl = no_verify_ssl
 
         self.name = model
         self.verbose = verbose
@@ -948,6 +953,11 @@ class Model(ModelSettings):
             model=self.name,
             stream=stream,
         )
+        
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+        if self.no_verify_ssl:
+            kwargs["verify_ssl"] = False
 
         if self.use_temperature is not False:
             if temperature is None:
