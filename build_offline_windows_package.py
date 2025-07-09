@@ -1,35 +1,46 @@
 #!/usr/bin/env python3
 """
-Aider 离线 Windows 二进制包构建脚本
-自动下载依赖、打包成可执行文件，供内网环境使用
+Aider Windows Offline Package Builder
+
+This script builds a standalone Windows executable package for aider,
+including all dependencies and configuration files.
 """
 
 import os
 import sys
 import shutil
-import subprocess
 import tempfile
-import urllib.request
-import zipfile
+import subprocess
 from pathlib import Path
+import zipfile
 import json
 import argparse
+from typing import Optional
 
-class AiderOfflineBuilder:
+class AiderWindowsBuilder:
     def __init__(self, output_dir="dist"):
         self.output_dir = Path(output_dir)
-        self.temp_dir = None
-        self.venv_dir = None
+        self.temp_dir: Optional[Path] = None
+        self.venv_dir: Optional[Path] = None
+        self.exe_dir: Optional[Path] = None
+        self.source_dir: Optional[Path] = None
+        self.venv_python: Optional[Path] = None
+        self.venv_pip: Optional[Path] = None
         
     def log(self, message):
-        print(f"[INFO] {message}")
+        """Print log message with timestamp"""
+        print(f"[BUILD] {message}")
         
     def error(self, message):
         print(f"[ERROR] {message}")
         sys.exit(1)
         
     def run_command(self, cmd, cwd=None, check=True):
-        self.log(f"执行命令: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+        """Execute command and handle errors"""
+        self.log(f"Running: {' '.join(map(str, cmd))}")
+        if cwd:
+            self.log(f"In directory: {cwd}")
+        
         try:
             result = subprocess.run(
                 cmd, 
@@ -37,96 +48,294 @@ class AiderOfflineBuilder:
                 check=check, 
                 capture_output=True, 
                 text=True,
+                encoding='utf-8',
                 shell=True if isinstance(cmd, str) else False
             )
             if result.stdout:
-                print(result.stdout)
+                self.log(result.stdout)
             return result
         except subprocess.CalledProcessError as e:
-            self.error(f"命令执行失败: {e}\n{e.stderr}")
+            self.error(f"Command failed with return code {e.returncode}")
+            self.error(f"STDOUT: {e.stdout}")
+            self.error(f"STDERR: {e.stderr}")
+            raise
             
-    def setup_temp_environment(self):
-        """设置临时构建环境"""
-        self.log("设置临时构建环境...")
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="aider_build_"))
-        self.venv_dir = self.temp_dir / "venv"
+    def setup_environment(self):
+        """Setup build environment"""
+        self.log("Setting up build environment...")
         
-        # 创建虚拟环境
+        # Create temp directory
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="aider_build_"))
+        self.log(f"Temp directory: {self.temp_dir}")
+        
+        # Copy source code
+        if (Path.cwd() / "pyproject.toml").exists() and "aider-chat" in open("pyproject.toml").read():
+            self.log("Detected aider project in current directory, using local source")
+            self.source_dir = self.temp_dir / "aider_source"
+            shutil.copytree(".", self.source_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', 'dist', 'build'))
+        else:
+            self.log("Downloading aider source from GitHub...")
+            # Download and extract aider source
+            import urllib.request
+            url = "https://github.com/paul-gauthier/aider/archive/main.zip"
+            zip_path = self.temp_dir / "aider.zip"
+            urllib.request.urlretrieve(url, zip_path)
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(self.temp_dir)
+            
+            self.source_dir = self.temp_dir / "aider-main"
+            
+    def create_virtual_environment(self):
+        """Create Python virtual environment"""
+        self.log("Creating virtual environment...")
+        
+        self.venv_dir = self.temp_dir / "venv"
         self.run_command([sys.executable, "-m", "venv", str(self.venv_dir)])
         
-        # 获取虚拟环境的python和pip路径
-        if os.name == 'nt':
+        # Set venv paths
+        if os.name == 'nt':  # Windows
             self.venv_python = self.venv_dir / "Scripts" / "python.exe"
             self.venv_pip = self.venv_dir / "Scripts" / "pip.exe"
         else:
             self.venv_python = self.venv_dir / "bin" / "python"
             self.venv_pip = self.venv_dir / "bin" / "pip"
-            
-    def download_aider_source(self):
-        """下载aider源码"""
-        self.log("下载aider源码...")
+    
+    def download_tiktoken_encodings(self):
+        """Pre-download tiktoken encoding files"""
+        self.log("Downloading tiktoken encoding files...")
         
-        # 如果当前目录就是aider项目，直接复制
-        if (Path.cwd() / "pyproject.toml").exists() and "aider-chat" in open("pyproject.toml").read():
-            self.log("检测到当前目录是aider项目，直接使用本地源码")
-            self.source_dir = self.temp_dir / "aider_source"
-            shutil.copytree(".", self.source_dir, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc', 'dist', 'build'))
-        else:
-            # 从GitHub下载
-            self.log("从GitHub下载aider源码...")
-            zip_url = "https://github.com/Aider-AI/aider/archive/refs/heads/main.zip"
-            zip_path = self.temp_dir / "aider.zip"
+        assert self.temp_dir is not None, "temp_dir must be set before calling this method"
+        assert self.venv_python is not None, "venv_python must be set before calling this method"
+        
+        try:
+            # First verify tiktoken is installed and importable
+            test_script = '''
+import sys
+import os
+try:
+    import tiktoken
+    print(f"✓ tiktoken version: {tiktoken.__version__}")
+    print(f"✓ tiktoken path: {tiktoken.__file__}")
+    
+    # Test basic functionality
+    from pathlib import Path
+    tiktoken_path = Path(tiktoken.__file__).parent
+    data_path = tiktoken_path / "data"
+    print(f"✓ tiktoken data directory: {data_path}")
+    print(f"✓ tiktoken data directory exists: {data_path.exists()}")
+    
+    if data_path.exists():
+        tiktoken_files = list(data_path.glob("*.tiktoken"))
+        print(f"✓ Found {len(tiktoken_files)} tiktoken files")
+        for f in tiktoken_files:
+            print(f"  - {f.name}")
+    else:
+        print("! tiktoken data directory not found - will download encodings")
+    
+    # Test if cl100k_base encoding works (this might download files)
+    try:
+        enc = tiktoken.get_encoding('cl100k_base')
+        print(f"✓ cl100k_base encoding loaded successfully (vocab size: {enc.n_vocab})")
+    except Exception as e:
+        print(f"! cl100k_base encoding test failed: {e}")
+    
+    print("✓ tiktoken testing completed successfully")
+        
+except ImportError as e:
+    print(f"✗ Failed to import tiktoken: {e}")
+    sys.exit(1)
+except Exception as e:
+    print(f"! tiktoken test warning: {e}")
+    print("✓ tiktoken is available but some tests failed - continuing build")
+'''
             
-            urllib.request.urlretrieve(zip_url, zip_path)
+            # Create and run test script
+            test_script_path = self.temp_dir / "test_tiktoken.py"
+            with open(test_script_path, 'w', encoding='utf-8') as f:
+                f.write(test_script)
             
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(self.temp_dir)
-                
-            self.source_dir = self.temp_dir / "aider-main"
+            self.log("Testing tiktoken installation...")
+            try:
+                self.run_command([str(self.venv_python), str(test_script_path)])
+            except subprocess.CalledProcessError as e:
+                self.log(f"Warning: tiktoken test failed with return code {e.returncode}")
+                self.log("This might be due to network issues, but tiktoken should still work at runtime")
             
+            # Attempt to pre-download common encodings, but don't fail if it doesn't work
+            download_script = '''
+import tiktoken
+import os
+import sys
+from pathlib import Path
+
+# Common encoding list - start with most important
+encodings_to_download = [
+    "cl100k_base",  # GPT-4, GPT-3.5-turbo (most important)
+    "o200k_base",   # GPT-4o models
+    "p50k_base",    # Codex models, text-davinci-002, text-davinci-003
+    "r50k_base",    # GPT-3 models like davinci
+]
+
+print("Starting tiktoken encoding download...")
+success_count = 0
+total_count = len(encodings_to_download)
+
+for encoding_name in encodings_to_download:
+    try:
+        print(f"Downloading {encoding_name}...")
+        enc = tiktoken.get_encoding(encoding_name)
+        print(f"✓ {encoding_name} downloaded successfully (vocab size: {enc.n_vocab})")
+        success_count += 1
+    except Exception as e:
+        print(f"! Failed to download {encoding_name}: {e}")
+        # Don't exit on failure, just continue with next encoding
+        
+print(f"\\nDownload completed: {success_count}/{total_count} encodings downloaded successfully")
+
+# Verify the encoding files are available
+try:
+    tiktoken_path = Path(tiktoken.__file__).parent
+    data_path = tiktoken_path / "data"
+    if data_path.exists():
+        tiktoken_files = list(data_path.glob("*.tiktoken"))
+        print(f"Total tiktoken files available: {len(tiktoken_files)}")
+        if tiktoken_files:
+            print("Available encoding files:")
+            for f in sorted(tiktoken_files):
+                print(f"  - {f.name}")
+    else:
+        print("Note: tiktoken data directory not found - encodings will be downloaded at runtime")
+except Exception as e:
+    print(f"Note: Could not check tiktoken data files: {e}")
+
+print("Tiktoken encoding preparation completed")
+'''
+            
+            # Create and run download script
+            download_script_path = self.temp_dir / "download_tiktoken.py"
+            with open(download_script_path, 'w', encoding='utf-8') as f:
+                f.write(download_script)
+            
+            self.log("Attempting to pre-download tiktoken encodings...")
+            try:
+                self.run_command([str(self.venv_python), str(download_script_path)])
+            except subprocess.CalledProcessError as e:
+                self.log(f"Warning: tiktoken encoding download failed with return code {e.returncode}")
+                self.log("This is not critical - encodings will be downloaded when first needed at runtime")
+            
+            # Clean up temporary scripts
+            test_script_path.unlink(missing_ok=True)
+            download_script_path.unlink(missing_ok=True)
+            
+            self.log("✓ Tiktoken encoding setup completed")
+            
+        except Exception as e:
+            self.log(f"Warning: Failed to setup tiktoken encodings: {e}")
+            self.log("The build will continue - tiktoken encodings will be downloaded at runtime if needed")
+            # Don't fail the build for this issue
+
     def install_dependencies(self):
-        """安装所有依赖"""
-        self.log("安装依赖包...")
+        """Install all dependencies"""
+        self.log("Installing dependency packages...")
         
-        # 升级pip
-        self.run_command([str(self.venv_pip), "install", "--upgrade", "pip"])
+        # Upgrade pip - use python -m pip instead of calling pip.exe directly
+        self.run_command([str(self.venv_python), "-m", "pip", "install", "--upgrade", "pip"])
         
-        # 安装PyInstaller
+        # Install PyInstaller
         self.run_command([str(self.venv_pip), "install", "pyinstaller"])
         
-        # 安装aider及其依赖
+        # Install aider and its dependencies
         self.run_command([str(self.venv_pip), "install", "-e", "."], cwd=self.source_dir)
         
-        # 安装额外依赖用于完整功能
+        # Install optional dependencies for full functionality
         optional_deps = ["help", "browser"]
         for dep in optional_deps:
             try:
                 self.run_command([str(self.venv_pip), "install", "-e", f".[{dep}]"], cwd=self.source_dir)
             except:
-                self.log(f"可选依赖 {dep} 安装失败，跳过")
-                
-    def create_spec_file(self):
-        """创建PyInstaller spec文件"""
-        self.log("创建PyInstaller配置文件...")
+                self.log(f"Optional dependency {dep} installation failed, skipping")
         
-        spec_content = '''# -*- mode: python ; coding: utf-8 -*-
-
+        # Pre-download tiktoken encoding files
+        # Temporarily disabled while debugging build issues
+        # self.download_tiktoken_encodings()
+        
+    def create_launcher_file(self):
+        """Create launcher file to avoid relative import issues"""
+        launcher_content = '''#!/usr/bin/env python3
 import sys
+import os
 from pathlib import Path
 
-# 添加aider源码路径
-aider_path = r"{source_dir}"
+# Ensure aider module can be found
+current_dir = Path(__file__).parent
+sys.path.insert(0, str(current_dir))
+
+# Import and run aider main program
+from aider.main import main
+
+if __name__ == "__main__":
+    main()
+'''
+        launcher_path = self.source_dir / "aider_launcher.py"
+        with open(launcher_path, 'w', encoding='utf-8') as f:
+            f.write(launcher_content)
+        return launcher_path
+
+    def create_spec_file(self):
+        """Create PyInstaller spec file"""
+        self.log("Creating PyInstaller configuration file...")
+        
+        # Create launcher file
+        launcher_path = self.create_launcher_file()
+        
+        # Use relative paths to avoid Windows path issues
+        source_path = str(self.source_dir).replace('\\', '/')
+        launcher_path_str = str(launcher_path).replace('\\', '/')
+        
+        spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
+
+import sys
+import os
+from pathlib import Path
+
+# Add aider source path
+aider_path = r"{source_path}"
 sys.path.insert(0, aider_path)
 
 block_cipher = None
 
-# 收集所有必要的数据文件
-datas = [
-    (r"{source_dir}\\aider\\resources", "aider\\resources"),
-    (r"{source_dir}\\aider\\queries", "aider\\queries"),
-]
+# Get tiktoken data file paths
+tiktoken_datas = []
+try:
+    import tiktoken
+    # Get tiktoken package location
+    tiktoken_pkg_path = Path(tiktoken.__file__).parent
+    tiktoken_data_path = tiktoken_pkg_path / "data"
+    
+    if tiktoken_data_path.exists():
+        # Add all encoding files
+        for encoding_file in tiktoken_data_path.glob("*.tiktoken"):
+            tiktoken_datas.append((str(encoding_file), f"tiktoken/data/{{encoding_file.name}}"))
+        
+        # If no specific file is found, add the entire data directory
+        if not tiktoken_datas:
+            tiktoken_datas.append((str(tiktoken_data_path), "tiktoken/data"))
+    
+    print(f"Found tiktoken data at: {{tiktoken_data_path}}")
+    print(f"Tiktoken data files: {{len(tiktoken_datas)}}")
+    
+except ImportError as e:
+    print(f"Could not import tiktoken: {{e}}")
+    tiktoken_datas = []
 
-# 隐藏导入
+# Collect all necessary data files
+datas = [
+    (r"{source_path}/aider/resources", "aider/resources"),
+    (r"{source_path}/aider/queries", "aider/queries"),
+] + tiktoken_datas
+
+# Hide imports
 hiddenimports = [
     'aider',
     'aider.main',
@@ -135,6 +344,9 @@ hiddenimports = [
     'aider.llm',
     'litellm',
     'tiktoken',
+    'tiktoken.registry',
+    'tiktoken.core',
+    'tiktoken.model',
     'tokenizers',
     'transformers',
     'torch',
@@ -143,25 +355,80 @@ hiddenimports = [
     'networkx',
     'tree_sitter',
     'tree_sitter_languages',
-    'PIL',
+    'tree_sitter_language_pack',
+    'requests',
+    'httpx',
+    'openai',
+    'anthropic',
+    'google',
+    'google.generativeai',
+    'google.ai.generativelanguage_v1beta',
+    'google.api_core',
+    'grpc',
+    'litellm.cost_calculator',
+    'litellm.utils',
+    'litellm.router',
+    'litellm.proxy',
+    'litellm.caching',
+    'litellm.exceptions',
+    'litellm.integrations',
+    'litellm.types',
+    'litellm.llms',
+    'litellm.llms.openai',
+    'litellm.llms.anthropic',
+    'litellm.llms.azure',
+    'litellm.llms.bedrock',
+    'litellm.llms.vertex_ai',
+    'litellm.llms.gemini',
+    'litellm.llms.ollama',
+    'litellm.llms.custom_httpx',
+    'pkg_resources',
+    'pkg_resources.py2_warn',
+    'importlib_metadata',
+    'importlib_resources',
+    'configargparse',
+    'shtab',
+    'diff_match_patch',
+    'flake8',
+    'pycodestyle',
+    'pyflakes',
+    'mccabe',
+    'prompt_toolkit',
+    'rich',
+    'markdown_it',
+    'pygments',
     'yaml',
     'json5',
-    'rich',
-    'prompt_toolkit',
+    'pathspec',
     'gitpython',
+    'git',
+    'watchfiles',
+    'pexpect',
+    'ptyprocess',
+    'psutil',
+    'sounddevice',
+    'soundfile',
+    'pydub',
+    'pillow',
     'beautifulsoup4',
-    'requests',
-    'urllib3',
+    'bs4',
+    'soupsieve',
     'certifi',
+    'urllib3',
     'charset_normalizer',
     'idna',
+    'click',
     'colorama',
     'packaging',
-    'setuptools',
+    'typing_extensions',
+    'six',
+    'pytz',
+    'python_dateutil',
+    'dateutil',
 ]
 
 a = Analysis(
-    [r"{source_dir}\\aider\\main.py"],
+    [r"{source_path}/aider_launcher.py"],
     pathex=[aider_path],
     binaries=[],
     datas=datas,
@@ -181,13 +448,17 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='aider',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -195,55 +466,47 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='aider',
-)
-'''.format(source_dir=str(self.source_dir).replace('\\', '\\\\'))
-
+'''
+        
         spec_path = self.temp_dir / "aider.spec"
         with open(spec_path, 'w', encoding='utf-8') as f:
             f.write(spec_content)
-            
+        
         return spec_path
         
     def build_executable(self):
-        """构建可执行文件"""
-        self.log("构建Windows可执行文件...")
+        """Build executable file"""
+        self.log("Building Windows executable file...")
         
         spec_path = self.create_spec_file()
         
-        # 使用PyInstaller构建
+        # Use PyInstaller to build
         self.run_command([
             str(self.venv_python), "-m", "PyInstaller",
             "--clean",
             "--noconfirm",
+            "--distpath", str(self.temp_dir / "dist"),
+            "--workpath", str(self.temp_dir / "build"),
             str(spec_path)
         ], cwd=self.temp_dir)
         
-        self.exe_dir = self.temp_dir / "dist" / "aider"
+        # onefile mode, exe file directly in dist directory
+        self.exe_dir = self.temp_dir / "dist"
         
     def create_config_files(self):
-        """创建配置文件和使用说明"""
-        self.log("创建配置文件...")
+        """Create configuration files and usage instructions"""
+        self.log("Creating configuration files...")
         
-        # 创建默认配置文件
-        config_content = """# Aider 配置文件
-# 适用于内网环境，通过 OpenAI Compatible API 连接大模型
+        # Create default configuration file
+        config_content = """# Aider Configuration File
+# For internal network use, connecting to large model via OpenAI Compatible API
 
-# 基本设置
+# Basic settings
 model: openai/your-model-name
 api-base: http://your-internal-api-server:port/v1
 api-key: your-api-key
 
-# 可选设置
+# Optional settings
 # max-tokens: 4096
 # temperature: 0.1
 # no-auto-commits: true
@@ -253,9 +516,9 @@ api-key: your-api-key
         with open(self.exe_dir / ".aider.conf.yml", 'w', encoding='utf-8') as f:
             f.write(config_content)
             
-        # 创建模型设置文件
-        model_settings = """# 模型设置文件
-# 针对内网OpenAI Compatible API的优化配置
+        # Create model settings file
+        model_settings = """# Model Settings File
+# Optimization configuration for specific models
 
 - name: openai/your-model-name
   edit_format: diff
@@ -280,10 +543,10 @@ api-key: your-api-key
             f.write(model_settings)
             
     def create_batch_files(self):
-        """创建启动批处理文件"""
-        self.log("创建启动脚本...")
+        """Create batch files for starting"""
+        self.log("Creating start script...")
         
-        # 主启动脚本
+        # Main start script
         start_bat = """@echo off
 chcp 65001 > nul
 title Aider - AI Pair Programming
@@ -293,16 +556,16 @@ echo           Aider - AI Pair Programming
 echo ===============================================
 echo.
 
-REM 设置环境变量（根据您的内网API服务器配置）
+REM Set environment variables (based on your internal API server configuration)
 REM set OPENAI_API_BASE=http://your-internal-api-server:port/v1
 REM set OPENAI_API_KEY=your-api-key
 
-echo 当前目录: %CD%
+echo Current directory: %CD%
 echo.
-echo 使用方法:
+echo Usage:
 echo   aider --model openai/your-model-name --api-base http://your-server:port/v1 --api-key your-key
 echo.
-echo 或者编辑 .aider.conf.yml 文件设置默认配置
+echo Or edit .aider.conf.yml file to set default configuration
 echo.
 
 cmd /k
@@ -311,18 +574,18 @@ cmd /k
         with open(self.exe_dir / "start_aider.bat", 'w', encoding='utf-8') as f:
             f.write(start_bat)
             
-        # 示例使用脚本
+        # Example usage script
         example_bat = """@echo off
 chcp 65001 > nul
 
-REM 示例：连接到内网OpenAI Compatible API
-REM 请根据您的实际环境修改以下参数
+REM Example: Connect to internal OpenAI Compatible API
+REM Please modify the following parameters based on your actual environment
 
 set API_BASE=http://your-internal-server:8000/v1
 set API_KEY=your-api-key-here
 set MODEL_NAME=your-model-name
 
-echo 正在启动 Aider...
+echo Starting Aider...
 echo API Base: %API_BASE%
 echo Model: %MODEL_NAME%
 echo.
@@ -336,25 +599,25 @@ pause
             f.write(example_bat)
             
     def create_documentation(self):
-        """创建使用文档"""
-        self.log("创建使用文档...")
+        """Create usage documentation"""
+        self.log("Creating usage documentation...")
         
-        readme_content = """# Aider 离线Windows版使用说明
+        readme_content = """# Aider Offline Windows Version Usage Instructions
 
-## 简介
-这是Aider的完全离线Windows版本，可以在内网环境中使用，通过OpenAI Compatible API连接您的大模型服务。
+## Introduction
+This is the complete offline Windows version of Aider, which can be used in internal network environments, connecting to your large model service via OpenAI Compatible API.
 
-## 系统要求
-- Windows 10/11 (64位)
-- 内网中的OpenAI Compatible API服务
+## System Requirements
+- Windows 10/11 (64-bit)
+- Internal network OpenAI Compatible API service
 
-## 快速开始
+## Quick Start
 
-### 1. 解压文件
-将整个文件夹解压到您想要的位置。
+### 1. Extract Files
+Extract the entire folder to the location you want.
 
-### 2. 配置API连接
-编辑 `.aider.conf.yml` 文件，设置您的API参数：
+### 2. Configure API Connection
+Edit `.aider.conf.yml` file to set your API parameters:
 
 ```yaml
 model: openai/your-model-name
@@ -362,44 +625,44 @@ api-base: http://your-internal-api-server:port/v1
 api-key: your-api-key
 ```
 
-### 3. 启动Aider
-- 双击 `start_aider.bat` 打开命令行环境
-- 或者直接运行 `example_start.bat`（需要先编辑其中的参数）
+### 3. Start Aider
+- Double-click `start_aider.bat` to open command line environment
+- Or directly run `example_start.bat` (need to edit parameters first)
 
-### 4. 使用Aider
+### 4. Use Aider
 ```bash
-# 进入您的项目目录
+# Enter your project directory
 cd C:\\path\\to\\your\\project
 
-# 启动aider（如果已配置.aider.conf.yml）
+# Start aider (if .aider.conf.yml is configured)
 aider
 
-# 或者直接指定参数
+# Or specify parameters directly
 aider --model openai/your-model --api-base http://your-server:port/v1 --api-key your-key
 ```
 
-## 常用命令
+## Common Commands
 
 ```bash
-# 查看帮助
+# View help
 aider --help
 
-# 列出可用模型
+# List available models
 aider --list-models
 
-# 使用特定模型
+# Use specific model
 aider --model openai/gpt-4
 
-# 设置上下文窗口
+# Set context window
 aider --model openai/your-model --max-tokens 8192
 
-# 禁用自动提交
+# Disable auto commits
 aider --no-auto-commits
 ```
 
-## 配置文件
+## Configuration Files
 
-### .aider.conf.yml (主配置文件)
+### .aider.conf.yml (Main Configuration File)
 ```yaml
 model: openai/your-model-name
 api-base: http://your-internal-api-server:port/v1
@@ -409,66 +672,66 @@ temperature: 0.1
 dark-mode: true
 ```
 
-### .aider.model.settings.yml (模型设置文件)
-用于优化特定模型的行为，无需修改。
+### .aider.model.settings.yml (Model Settings File)
+Used for optimizing behavior of specific models, no need to modify.
 
-## 环境变量设置
+## Environment Variable Settings
 
-您也可以通过环境变量设置API参数：
+You can also set API parameters via environment variables:
 
 ```bat
 set OPENAI_API_BASE=http://your-internal-server:port/v1
 set OPENAI_API_KEY=your-api-key
 ```
 
-## 故障排除
+## Troubleshooting
 
-### 连接问题
-- 检查API服务器地址和端口是否正确
-- 确认API密钥有效
-- 测试网络连通性
+### Connection Issues
+- Check API server address and port
+- Confirm API key is valid
+- Test network connectivity
 
-### 模型问题
-- 确认模型名称正确
-- 检查模型是否支持chat completion
-- 验证模型的上下文窗口大小
+### Model Issues
+- Confirm model name is correct
+- Check if model supports chat completion
+- Verify model context window size
 
-### 性能优化
-- 使用diff格式进行代码编辑
-- 适当设置max-tokens参数
-- 根据需要调整temperature参数
+### Performance Optimization
+- Use diff format for code editing
+- Appropriately set max-tokens parameter
+- Adjust temperature parameter based on needs
 
-## 技术支持
+## Technical Support
 
-如有问题，请参考：
-- Aider官方文档: https://aider.chat/docs/
-- GitHub仓库: https://github.com/Aider-AI/aider
+For help, please refer to:
+- Aider Official Documentation: https://aider.chat/docs/
+- GitHub Repository: https://github.com/Aider-AI/aider
 
-## 版本信息
-- 构建时间: """ + f"{self.get_build_time()}" + """
-- 包含组件: Aider + 所有Python依赖
-- 支持功能: 代码编辑、Git集成、多语言支持
+## Version Information
+- Build Time: """ + f"{self.get_build_time()}" + """
+- Included Components: Aider + All Python Dependencies
+- Supported Features: Code Editing, Git Integration, Multi-Language Support
 
 ---
-祝您使用愉快！
+Have a great time using it!
 """
         
         with open(self.exe_dir / "README.md", 'w', encoding='utf-8') as f:
             f.write(readme_content)
             
     def get_build_time(self):
-        """获取构建时间"""
+        """Get build time"""
         from datetime import datetime
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
     def create_final_package(self):
-        """创建最终的发布包"""
-        self.log("创建最终发布包...")
+        """Create final release package"""
+        self.log("Creating final release package...")
         
-        # 确保输出目录存在
+        # Ensure output directory exists
         self.output_dir.mkdir(exist_ok=True)
         
-        # 创建版本信息文件
+        # Create version information file
         version_info = {
             "build_time": self.get_build_time(),
             "python_version": sys.version,
@@ -480,14 +743,14 @@ set OPENAI_API_KEY=your-api-key
         with open(self.exe_dir / "version_info.json", 'w', encoding='utf-8') as f:
             json.dump(version_info, f, indent=2, ensure_ascii=False)
             
-        # 复制到输出目录
+        # Copy to output directory
         final_dir = self.output_dir / "aider_windows_offline"
         if final_dir.exists():
             shutil.rmtree(final_dir)
             
         shutil.copytree(self.exe_dir, final_dir)
         
-        # 创建压缩包
+        # Create zip package
         zip_path = self.output_dir / "aider_windows_offline.zip"
         if zip_path.exists():
             zip_path.unlink()
@@ -498,23 +761,23 @@ set OPENAI_API_KEY=your-api-key
             str(final_dir)
         )
         
-        self.log(f"✅ 离线包创建完成!")
-        self.log(f"📁 目录: {final_dir}")
-        self.log(f"📦 压缩包: {zip_path}")
+        self.log(f"✅ Offline package created successfully!")
+        self.log(f"📁 Directory: {final_dir}")
+        self.log(f"�� Zip Package: {zip_path}")
         
     def cleanup(self):
-        """清理临时文件"""
+        """Clean up temporary files"""
         if self.temp_dir and self.temp_dir.exists():
-            self.log("清理临时文件...")
+            self.log("Cleaning up temporary files...")
             shutil.rmtree(self.temp_dir, ignore_errors=True)
             
     def build(self):
-        """执行完整的构建流程"""
+        """Execute complete build process"""
         try:
-            self.log("🚀 开始构建 Aider Windows 离线包...")
+            self.log("🚀 Starting Aider Windows Offline Package Build...")
             
-            self.setup_temp_environment()
-            self.download_aider_source()
+            self.setup_environment()
+            self.create_virtual_environment()
             self.install_dependencies()
             self.build_executable()
             self.create_config_files()
@@ -522,20 +785,20 @@ set OPENAI_API_KEY=your-api-key
             self.create_documentation()
             self.create_final_package()
             
-            self.log("🎉 构建完成!")
+            self.log("🎉 Build completed!")
             
         except Exception as e:
-            self.error(f"构建失败: {e}")
+            self.error(f"Build failed: {e}")
         finally:
             self.cleanup()
 
 def main():
-    parser = argparse.ArgumentParser(description="构建Aider离线Windows包")
-    parser.add_argument("-o", "--output", default="dist", help="输出目录 (默认: dist)")
+    parser = argparse.ArgumentParser(description="Build Aider Offline Windows Package")
+    parser.add_argument("-o", "--output", default="dist", help="Output directory (default: dist)")
     
     args = parser.parse_args()
     
-    builder = AiderOfflineBuilder(args.output)
+    builder = AiderWindowsBuilder(args.output)
     builder.build()
 
 if __name__ == "__main__":

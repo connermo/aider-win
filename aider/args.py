@@ -81,12 +81,7 @@ def get_parser(default_config_files, git_root):
         "--custom-model-name",
         help="Specify the model name to use with custom API endpoint",
     )
-    group.add_argument(
-        "--no-verify-ssl",
-        action="store_true",
-        help="Disable SSL verification for custom API endpoints",
-        default=False,
-    )
+
     group.add_argument(
         "--openai-api-type",
         help="(deprecated, use --set-env OPENAI_API_TYPE=<value>)",
