@@ -503,11 +503,11 @@ exe = EXE(
 
 # Basic settings
 model: openai/your-model-name
-api-base: http://your-internal-api-server:port/v1
-api-key: your-api-key
+openai-api-base: http://your-internal-api-server:port/v1
+openai-api-key: your-api-key
 
 # Optional settings
-# max-tokens: 4096
+# max-chat-history-tokens: 4096
 # temperature: 0.1
 # no-auto-commits: true
 # dark-mode: true
@@ -563,7 +563,7 @@ REM set OPENAI_API_KEY=your-api-key
 echo Current directory: %CD%
 echo.
 echo Usage:
-echo   aider --model openai/your-model-name --api-base http://your-server:port/v1 --api-key your-key
+echo   aider --model openai/your-model-name --openai-api-base http://your-server:port/v1 --openai-api-key your-key
 echo.
 echo Or edit .aider.conf.yml file to set default configuration
 echo.
@@ -590,7 +590,7 @@ echo API Base: %API_BASE%
 echo Model: %MODEL_NAME%
 echo.
 
-aider.exe --model openai/%MODEL_NAME% --api-base %API_BASE% --api-key %API_KEY%
+aider.exe --model openai/%MODEL_NAME% --openai-api-base %API_BASE% --openai-api-key %API_KEY%
 
 pause
 """
@@ -621,8 +621,8 @@ Edit `.aider.conf.yml` file to set your API parameters:
 
 ```yaml
 model: openai/your-model-name
-api-base: http://your-internal-api-server:port/v1
-api-key: your-api-key
+openai-api-base: http://your-internal-api-server:port/v1
+openai-api-key: your-api-key
 ```
 
 ### 3. Start Aider
@@ -638,7 +638,7 @@ cd C:\\path\\to\\your\\project
 aider
 
 # Or specify parameters directly
-aider --model openai/your-model --api-base http://your-server:port/v1 --api-key your-key
+aider --model openai/your-model --openai-api-base http://your-server:port/v1 --openai-api-key your-key
 ```
 
 ## Common Commands
@@ -654,7 +654,7 @@ aider --list-models
 aider --model openai/gpt-4
 
 # Set context window
-aider --model openai/your-model --max-tokens 8192
+aider --model openai/your-model --max-chat-history-tokens 8192
 
 # Disable auto commits
 aider --no-auto-commits
@@ -665,9 +665,9 @@ aider --no-auto-commits
 ### .aider.conf.yml (Main Configuration File)
 ```yaml
 model: openai/your-model-name
-api-base: http://your-internal-api-server:port/v1
-api-key: your-api-key
-max-tokens: 4096
+openai-api-base: http://your-internal-api-server:port/v1
+openai-api-key: your-api-key
+max-chat-history-tokens: 4096
 temperature: 0.1
 dark-mode: true
 ```
@@ -680,8 +680,8 @@ Used for optimizing behavior of specific models, no need to modify.
 You can also set API parameters via environment variables:
 
 ```bat
-set OPENAI_API_BASE=http://your-internal-server:port/v1
-set OPENAI_API_KEY=your-api-key
+set AIDER_OPENAI_API_BASE=http://your-internal-server:port/v1
+set AIDER_OPENAI_API_KEY=your-api-key
 ```
 
 ## Troubleshooting
@@ -698,7 +698,7 @@ set OPENAI_API_KEY=your-api-key
 
 ### Performance Optimization
 - Use diff format for code editing
-- Appropriately set max-tokens parameter
+- Appropriately set max-chat-history-tokens parameter
 - Adjust temperature parameter based on needs
 
 ## Technical Support
